@@ -163,6 +163,7 @@ public class CommitLog {
 
     /**
      * When the normal exit, data recovery, all memory data have been flush
+     * Broker正常停止文件恢复
      */
     public void recoverNormally(long maxPhyOffsetOfConsumeQueue) {
         boolean checkCRCOnRecover = this.defaultMessageStore.getMessageStoreConfig().isCheckCRCOnRecover();
@@ -175,9 +176,15 @@ public class CommitLog {
 
             MappedFile mappedFile = mappedFiles.get(index);
             ByteBuffer byteBuffer = mappedFile.sliceByteBuffer();
+            //CommitLog文件已经确认的物理偏移量等于MappedFile的初始偏移量+mappedFileOffset
             long processOffset = mappedFile.getFileFromOffset();
+            //当前文件校验通过的offset
             long mappedFileOffset = 0;
             while (true) {
+                /**
+                 * 编列CommitLog文件，每次取出一条消息如果查找结果为true并且消息长度大于0表示消息正确
+                 * mappedFileOffset移动消息大小的位置
+                 */
                 DispatchRequest dispatchRequest = this.checkMessageAndReturnSize(byteBuffer, checkCRCOnRecover);
                 int size = dispatchRequest.getMsgSize();
                 // Normal data
@@ -187,13 +194,18 @@ public class CommitLog {
                 // Come the end of the file, switch to the next file Since the
                 // return 0 representatives met last hole,
                 // this can not be included in truncate offset
+                /**
+                 * 如果查到消息但是消息的大小为0说明已经查找到文件的末尾
+                 */
                 else if (dispatchRequest.isSuccess() && size == 0) {
                     index++;
+                    //查询的页数大于等于MappedFiles的size
                     if (index >= mappedFiles.size()) {
                         // Current branch can not happen
                         log.info("recover last 3 physics file over, last mapped file " + mappedFile.getFileName());
                         break;
                     } else {
+                        //继续循环
                         mappedFile = mappedFiles.get(index);
                         byteBuffer = mappedFile.sliceByteBuffer();
                         processOffset = mappedFile.getFileFromOffset();
@@ -208,9 +220,14 @@ public class CommitLog {
                 }
             }
 
+            /**
+             * 确认的物理偏移量= MappedFile的初始偏移量+校验通过的消息的所有size相加
+             * 更新MappedFileQueue的FlushedWhere和CommitedWhere指针
+             */
             processOffset += mappedFileOffset;
             this.mappedFileQueue.setFlushedWhere(processOffset);
             this.mappedFileQueue.setCommittedWhere(processOffset);
+            //删除offset之后的所有文件
             this.mappedFileQueue.truncateDirtyFiles(processOffset);
 
             // Clear ConsumeQueue redundant data
@@ -420,6 +437,10 @@ public class CommitLog {
         this.confirmOffset = phyOffset;
     }
 
+    /**
+     * Broker异常停止文件恢复
+     * @param maxPhyOffsetOfConsumeQueue
+     */
     @Deprecated
     public void recoverAbnormally(long maxPhyOffsetOfConsumeQueue) {
         // recover by the minimum time stamp
@@ -506,9 +527,17 @@ public class CommitLog {
         }
     }
 
+    /**
+     *
+     * @param mappedFile
+     * @return
+     */
     private boolean isMappedFileMatchedRecover(final MappedFile mappedFile) {
         ByteBuffer byteBuffer = mappedFile.sliceByteBuffer();
 
+        /**
+         * 首先判断w文件的魔数，
+         */
         int magicCode = byteBuffer.getInt(MessageDecoder.MESSAGE_MAGIC_CODE_POSTION);
         if (magicCode != MESSAGE_MAGIC_CODE) {
             return false;
@@ -518,6 +547,9 @@ public class CommitLog {
         int bornhostLength = (sysFlag & MessageSysFlag.BORNHOST_V6_FLAG) == 0 ? 8 : 20;
         int msgStoreTimePos = 4 + 4 + 4 + 4 + 4 + 8 + 8 + 4 + 8 + bornhostLength;
         long storeTimestamp = byteBuffer.getLong(msgStoreTimePos);
+        /**
+         * 第一条消息存储时间戳==0，说明该文件为存储任何消息
+         */
         if (0 == storeTimestamp) {
             return false;
         }
@@ -893,6 +925,9 @@ public class CommitLog {
         storeStatsService.getSinglePutMessageTopicTimesTotal(msg.getTopic()).incrementAndGet();
         storeStatsService.getSinglePutMessageTopicSizeTotal(topic).addAndGet(result.getWroteBytes());
 
+        /**
+         * 刷盘
+         */
         handleDiskFlush(result, putMessageResult, msg);
         handleHA(result, putMessageResult, msg);
 
@@ -951,8 +986,10 @@ public class CommitLog {
         if (FlushDiskType.SYNC_FLUSH == this.defaultMessageStore.getMessageStoreConfig().getFlushDiskType()) {
             final GroupCommitService service = (GroupCommitService) this.flushCommitLogService;
             if (messageExt.isWaitStoreMsgOK()) {
+                //创建GroupCommitRequest并同步任务提交request
                 GroupCommitRequest request = new GroupCommitRequest(result.getWroteOffset() + result.getWroteBytes());
                 service.putRequest(request);
+                //等待同步任务完成
                 CompletableFuture<PutMessageStatus> flushOkFuture = request.future();
                 PutMessageStatus flushStatus = null;
                 try {
@@ -972,6 +1009,9 @@ public class CommitLog {
         }
         // Asynchronous flush
         else {
+            //isTransientStorePoolEnable这个参数为true的话说明之前是写入到对外内存的ByteBuffer的这个时候就需要单独
+            //申请一块堆外内存（与目标物理文件大小一样），并且对内存会使用内存锁锁定，确保不会被置换到x虚拟内存中
+            //消息首先追加到堆外内存，然后提交到物理文件的内存映射内存（MappedFileBuffer）中再刷入磁盘
             if (!this.defaultMessageStore.getMessageStoreConfig().isTransientStorePoolEnable()) {
                 flushCommitLogService.wakeup();
             } else {
@@ -1241,6 +1281,10 @@ public class CommitLog {
         protected static final int RETRY_TIMES_OVER = 10;
     }
 
+    /**
+     * 将堆外内存的数据提交到CommitLog文件对应的映射文件
+     *
+     */
     class CommitRealTimeService extends FlushCommitLogService {
 
         private long lastCommitTimestamp = 0;
@@ -1294,6 +1338,9 @@ public class CommitLog {
         }
     }
 
+    /**
+     * 将物理文件的内存映射Buffer刷新到磁盘
+     */
     class FlushRealTimeService extends FlushCommitLogService {
         private long lastFlushTimestamp = 0;
         private long printTimes = 0;
@@ -1321,6 +1368,9 @@ public class CommitLog {
                 }
 
                 try {
+                    /**
+                     * flushCommitLogTimed：默认false：表示await方法等待，true:表Thread.sleep等待
+                     */
                     if (flushCommitLogTimed) {
                         Thread.sleep(interval);
                     } else {
@@ -1376,7 +1426,13 @@ public class CommitLog {
     }
 
     public static class GroupCommitRequest {
+        /**
+         * 刷盘偏移量
+         */
         private final long nextOffset;
+        /**
+         * 倒计数锁存器
+         */
         private CompletableFuture<PutMessageStatus> flushOKFuture = new CompletableFuture<>();
         private final long startTimestamp = System.currentTimeMillis();
         private long timeoutMillis = Long.MAX_VALUE;
@@ -1412,6 +1468,10 @@ public class CommitLog {
      * GroupCommit Service
      */
     class GroupCommitService extends FlushCommitLogService {
+
+        /**
+         * 同步刷盘任务暂存容器
+         */
         private volatile List<GroupCommitRequest> requestsWrite = new ArrayList<GroupCommitRequest>();
         private volatile List<GroupCommitRequest> requestsRead = new ArrayList<GroupCommitRequest>();
 

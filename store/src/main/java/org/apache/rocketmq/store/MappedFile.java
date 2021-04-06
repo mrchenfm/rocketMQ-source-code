@@ -87,7 +87,7 @@ public class MappedFile extends ReferenceResource {
      * Message will put to here first, and then reput to FileChannel if writeBuffer is not null.
      */
     /**
-     * 堆内存ByteBuffer，如果不为空，数据首先存储在这里，然后提交到MappedFile对应的内存映射文件Buffer
+     * 堆外内存ByteBuffer，如果不为空，数据首先存储在这里，然后提交到MappedFile对应的内存映射文件Buffer
      * transientStorePoolEnabled为true时不为空
      */
     protected ByteBuffer writeBuffer = null;
@@ -360,7 +360,7 @@ public class MappedFile extends ReferenceResource {
      * @return
      */
     public int commit(final int commitLeastPages) {
-        //如果Jvm堆缓存的ByteBuffer为空就返回wrotePosition的指针，无需commit操作，说明commit的主体是writeBuffer
+        //如果堆外缓存的ByteBuffer为空就返回wrotePosition的指针，无需commit操作，说明commit的主体是writeBuffer
         if (writeBuffer == null) {
             //no need to commit data to file channel, so just regard wrotePosition as committedPosition.
             return this.wrotePosition.get();

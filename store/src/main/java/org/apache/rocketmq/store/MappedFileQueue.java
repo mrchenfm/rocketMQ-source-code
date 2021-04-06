@@ -35,15 +35,30 @@ public class MappedFileQueue {
 
     private static final int DELETE_FILES_BATCH_MAX = 10;
 
+    /**
+     * 目录路径
+     */
     private final String storePath;
 
+    /**
+     * MappedFile的数量
+     */
     private final int mappedFileSize;
 
     private final CopyOnWriteArrayList<MappedFile> mappedFiles = new CopyOnWriteArrayList<MappedFile>();
 
+    /**
+     * 分配MappedFile服务
+     */
     private final AllocateMappedFileService allocateMappedFileService;
 
+    /**
+     * 刷新位置
+     */
     private long flushedWhere = 0;
+    /**
+     * 提交位置
+     */
     private long committedWhere = 0;
 
     private volatile long storeTimestamp = 0;
@@ -104,14 +119,19 @@ public class MappedFileQueue {
     public void truncateDirtyFiles(long offset) {
         List<MappedFile> willRemoveFiles = new ArrayList<MappedFile>();
 
+        //遍历所有的MappedFile文件，删除offset之后的所有文件
         for (MappedFile file : this.mappedFiles) {
+            //获取每个文件的最后一个物理偏移量
             long fileTailOffset = file.getFileFromOffset() + this.mappedFileSize;
+            //比较如果最后一个物理偏移量小于offset那么就不做处理，然后比较offset于这个文件的初始偏移量比较
+            //如果OFFSET大那么就把这个文件的flushedPosition等进行设置
             if (fileTailOffset > offset) {
                 if (offset >= file.getFileFromOffset()) {
                     file.setWrotePosition((int) (offset % this.mappedFileSize));
                     file.setCommittedPosition((int) (offset % this.mappedFileSize));
                     file.setFlushedPosition((int) (offset % this.mappedFileSize));
                 } else {
+                    //offset小于初始物理偏移量，将该页添加到删除的集合中
                     file.destroy(1000);
                     willRemoveFiles.add(file);
                 }
@@ -121,6 +141,10 @@ public class MappedFileQueue {
         this.deleteExpiredFile(willRemoveFiles);
     }
 
+    /**
+     * 删除过期文件
+     * @param files
+     */
     void deleteExpiredFile(List<MappedFile> files) {
 
         if (!files.isEmpty()) {
